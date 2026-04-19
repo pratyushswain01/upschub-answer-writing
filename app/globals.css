@@ -1,26 +1,174 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+/* =========================
+   🌍 GLOBAL THEME (OFF-WHITE)
+========================= */
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --bg-main: #f8fafc;
+    /* main off-white */
+    --bg-soft: #f1f5f9;
+    /* secondary */
+    --card-bg: #ffffff;
+
+    --border: #e2e8f0;
+
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+
+    --primary: #2563eb;
+    --primary-light: #3b82f6;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+  }
+
+  /* 🔥 FORCE REMOVE BLACK */
+  body {
+    background: var(--bg-main) !important;
+    color: var(--text-main);
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+
+  h1,
+  h2,
+  h3 {
+    color: #020617;
+    font-weight: 600;
+  }
+
+  p {
+    color: var(--text-muted);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* =========================
+   📦 GLOBAL LAYOUT
+========================= */
+.app-wrapper {
+  min-height: 100vh;
+  background: var(--bg-soft);
+  padding: 20px;
+}
+
+.container-main {
+  max-width: 1100px;
+  margin: auto;
+}
+
+/* =========================
+   💎 CARD (CLEAN WHITE)
+========================= */
+.card {
+  background: var(--card-bg);
+  border-radius: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+  transition: 0.25s;
+}
+
+.card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+}
+
+/* =========================
+   🧠 QUESTION ITEM
+========================= */
+.question {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  margin-bottom: 10px;
+  background: #ffffff;
+  transition: 0.2s;
+}
+
+.question:hover {
+  background: #f8fafc;
+  border-color: var(--primary-light);
+}
+
+/* =========================
+   🏷 TAGS
+========================= */
+.tag {
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.easy {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.medium {
+  background: #fef9c3;
+  color: #ca8a04;
+}
+
+.hard {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+/* =========================
+   🔘 BUTTON
+========================= */
+.btn {
+  color: var(--primary);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn:hover {
+  text-decoration: underline;
+}
+
+/* =========================
+   ✨ GRADIENT TEXT
+========================= */
+.gradient-text {
+  background: linear-gradient(to right, #2563eb, #3b82f6);
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+/* =========================
+   🎯 SCROLLBAR
+========================= */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5f5;
+  border-radius: 10px;
+}
+
+/* =========================
+   📱 MOBILE
+========================= */
+@media (max-width: 768px) {
+  .app-wrapper {
+    padding: 12px;
+  }
+
+  .question {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
 }
