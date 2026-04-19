@@ -3,14 +3,14 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import jsPDF from "jspdf";
-import { Play, Camera, Download, ArrowUp, X, CheckCircle2, Clock } from "lucide-react";
+import { Play, Camera, Download, X, Clock, FileText, ChevronRight } from "lucide-react";
 import { questions } from "@/lib/questions";
 
 export default function AnswerWritingPage({ params }: { params: Promise<{ id: string }> }) {
     const { id } = React.use(params);
     const q = questions.find((q) => q.id === parseInt(id));
 
-    if (!q) return <div className="flex items-center justify-center min-h-screen text-red-400">Question not found</div>;
+    if (!q) return <div className="flex items-center justify-center min-h-screen">Question not found</div>;
 
     const [isWriting, setIsWriting] = useState(false);
     const [time, setTime] = useState(0);
@@ -37,17 +37,6 @@ export default function AnswerWritingPage({ params }: { params: Promise<{ id: st
         return `${mins}:${secs}`;
     };
 
-    const startWriting = () => {
-        setIsWriting(true);
-        setTime(0);
-        setCapturedImages([]);
-    };
-
-    const endWriting = () => {
-        setIsWriting(false);
-        setShowCamera(true);
-    };
-
     const startCamera = async () => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
@@ -56,7 +45,7 @@ export default function AnswerWritingPage({ params }: { params: Promise<{ id: st
             if (videoRef.current) videoRef.current.srcObject = stream;
             streamRef.current = stream;
         } catch (err) {
-            alert("Camera access denied. Please enable it in settings.");
+            alert("Please allow camera access to scan your answer.");
         }
     };
 
@@ -76,8 +65,7 @@ export default function AnswerWritingPage({ params }: { params: Promise<{ id: st
     };
 
     const generateAndDownloadPDF = () => {
-        if (capturedImages.length === 0) return alert("No pages captured.");
-
+        if (capturedImages.length === 0) return;
         const doc = new jsPDF("p", "mm", "a4");
         const pw = doc.internal.pageSize.getWidth();
         const ph = doc.internal.pageSize.getHeight();
@@ -85,107 +73,115 @@ export default function AnswerWritingPage({ params }: { params: Promise<{ id: st
         capturedImages.forEach((img, i) => {
             if (i > 0) doc.addPage();
             doc.addImage(img, "JPEG", 0, 0, pw, ph);
-            doc.setTextColor(200, 200, 200);
-            doc.setFontSize(40);
+            doc.setTextColor(220, 220, 220);
+            doc.setFontSize(50);
             doc.text("UPSChub", pw / 2, ph / 2, { align: "center", angle: 45 });
         });
 
-        doc.save(`UPSChub_${new Date().getTime()}.pdf`);
+        doc.save(`UPSChub_Response.pdf`);
         stopCamera();
     };
 
     return (
-        <div className="min-h-screen bg-[#09090b] text-zinc-100 font-sans selection:bg-emerald-500/30">
-            <div className="max-w-2xl mx-auto px-6 py-10">
-
-                {/* Status Bar */}
-                <header className="flex justify-between items-end mb-12">
-                    <div className="space-y-1">
-                        <span className="text-emerald-500 font-bold tracking-widest text-[10px] uppercase">{q.chapter}</span>
-                        <h1 className="text-3xl font-bold tracking-tight">Answer Writing</h1>
-                    </div>
-                    <div className="flex flex-col items-end">
-                        <div className="flex items-center gap-2 text-zinc-400 mb-1">
-                            <Clock className="w-3 h-3" />
-                            <span className="text-[10px] uppercase font-medium">Session Time</span>
+        <div className="min-h-screen bg-[#F8F9FA] text-slate-900 font-sans antialiased">
+            <div className="max-w-2xl mx-auto px-6 py-8">
+                
+                {/* Header */}
+                <header className="flex justify-between items-center mb-10">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-bold italic">U</div>
+                        <div>
+                            <h2 className="text-xs font-bold text-indigo-600 uppercase tracking-widest leading-tight">UPSChub</h2>
+                            <p className="text-slate-400 text-[10px] font-medium uppercase tracking-tighter leading-tight">Practice Portal</p>
                         </div>
-                        <span className={`text-4xl font-mono leading-none ${isWriting ? 'text-emerald-400' : 'text-zinc-600'}`}>
+                    </div>
+                    <div className="text-right">
+                        <div className="flex items-center gap-1.5 justify-end text-slate-400 mb-0.5">
+                            <Clock className="w-3 h-3" />
+                            <span className="text-[10px] font-bold uppercase">Timer</span>
+                        </div>
+                        <span className={`text-3xl font-mono tabular-nums leading-none font-medium ${isWriting ? 'text-slate-900' : 'text-slate-300'}`}>
                             {formatTime(time)}
                         </span>
                     </div>
                 </header>
 
-                {/* Question Card */}
-                <div className="relative group">
-                    <div className="absolute -inset-0.5 bg-gradient-to-r from-emerald-500/20 to-blue-500/20 rounded-3xl blur opacity-75 group-hover:opacity-100 transition duration-1000"></div>
-                    <div className="relative bg-zinc-900 border border-zinc-800 rounded-3xl p-8 shadow-2xl">
-                        <p className="text-lg md:text-xl leading-relaxed text-zinc-200 font-medium italic">
-                            "{q.text}"
-                        </p>
+                {/* Main Content Area */}
+                <main className="bg-white rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden">
+                    <div className="p-8 md:p-12">
+                        <div className="flex items-center gap-2 mb-4">
+                            <FileText className="w-4 h-4 text-indigo-500" />
+                            <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{q.chapter}</span>
+                        </div>
+                        <h3 className="text-2xl md:text-3xl font-semibold text-slate-800 leading-snug">
+                            {q.text}
+                        </h3>
                     </div>
-                </div>
 
-                {/* Action Button */}
-                {!isWriting && !showCamera && (
-                    <motion.button
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        onClick={startWriting}
-                        className="w-full mt-12 bg-white text-black hover:bg-emerald-400 transition-colors py-6 rounded-2xl text-xl font-bold flex items-center justify-center gap-3 shadow-xl"
-                    >
-                        <Play fill="black" className="w-5 h-5" /> Start Attempt
-                    </motion.button>
-                )}
+                    {!isWriting && !showCamera && (
+                        <div className="p-8 pt-0">
+                            <button
+                                onClick={() => { setIsWriting(true); setTime(0); }}
+                                className="w-full bg-slate-900 hover:bg-indigo-600 text-white transition-all duration-300 py-5 rounded-2xl text-lg font-bold flex items-center justify-center gap-3 group shadow-lg shadow-slate-200"
+                            >
+                                Start Writing <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                            </button>
+                        </div>
+                    )}
+                </main>
 
-                {/* Floating End Controls */}
+                {/* Floating Action Controls */}
                 <AnimatePresence>
                     {isWriting && (
                         <motion.div
-                            initial={{ y: 100 }}
-                            animate={{ y: 0 }}
-                            exit={{ y: 100 }}
-                            className="fixed bottom-10 left-0 right-0 px-6 z-50"
+                            initial={{ y: 50, opacity: 0 }}
+                            animate={{ y: 0, opacity: 1 }}
+                            exit={{ y: 50, opacity: 0 }}
+                            className="fixed bottom-12 left-0 right-0 px-6 flex justify-center pointer-events-none"
                         >
-                            <div className="max-w-md mx-auto bg-zinc-900/90 backdrop-blur-xl border border-zinc-700 p-4 rounded-full flex items-center justify-between shadow-2xl">
-                                <div className="flex items-center gap-4 pl-4">
-                                    <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-                                    <span className="text-sm font-semibold tracking-wide">RECORDING SESSION</span>
+                            <div className="bg-white border border-slate-200 shadow-2xl rounded-full p-2 flex items-center gap-6 pointer-events-auto">
+                                <div className="flex items-center gap-3 pl-5 pr-2 border-r border-slate-100">
+                                    <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />
+                                    <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest">In Progress</span>
                                 </div>
                                 <button
-                                    onClick={endWriting}
-                                    className="bg-emerald-500 hover:bg-emerald-600 px-8 py-3 rounded-full text-sm font-bold text-black transition-all"
+                                    onClick={() => { setIsWriting(false); setShowCamera(true); }}
+                                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-full text-xs font-black uppercase tracking-wider transition-colors shadow-md shadow-indigo-200"
                                 >
-                                    FINISH
+                                    Finish & Scan
                                 </button>
                             </div>
                         </motion.div>
                     )}
                 </AnimatePresence>
 
-                {/* Professional Camera Interface */}
+                {/* Modern White Camera Overlay */}
                 {showCamera && (
-                    <motion.div
+                    <motion.div 
                         initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                        className="fixed inset-0 bg-black z-[100] flex flex-col"
+                        className="fixed inset-0 bg-white z-[100] flex flex-col"
                     >
-                        {/* Camera Header */}
-                        <div className="p-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent absolute top-0 w-full z-10">
-                            <button onClick={stopCamera} className="p-2 bg-white/10 rounded-full backdrop-blur-md">
+                        {/* Camera Top Bar */}
+                        <div className="px-6 py-4 flex justify-between items-center border-b border-slate-100">
+                            <button onClick={stopCamera} className="p-2 text-slate-400 hover:text-red-500 transition-colors">
                                 <X className="w-6 h-6" />
                             </button>
-                            <div className="bg-emerald-500/20 border border-emerald-500/50 px-4 py-1 rounded-full text-emerald-400 text-xs font-bold">
-                                {capturedImages.length} PAGES READY
+                            <div className="text-xs font-black text-slate-800 uppercase tracking-widest">
+                                Scanned: {capturedImages.length} Pages
                             </div>
-                            <button
-                                onClick={generateAndDownloadPDF}
-                                className="flex items-center gap-2 bg-emerald-500 text-black px-4 py-2 rounded-xl font-bold text-sm shadow-lg shadow-emerald-500/20"
+                            <button 
+                                onClick={generateAndDownloadPDF} 
+                                disabled={capturedImages.length === 0}
+                                className={`px-5 py-2 rounded-xl font-bold text-xs transition-all ${
+                                    capturedImages.length > 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-300'
+                                }`}
                             >
-                                <Download className="w-4 h-4" /> SAVE PDF
+                                DONE
                             </button>
                         </div>
 
-                        {/* Viewfinder */}
-                        <div className="flex-1 flex items-center justify-center relative overflow-hidden">
+                        {/* Viewfinder Area */}
+                        <div className="flex-1 relative bg-slate-50 flex items-center justify-center overflow-hidden">
                             <video
                                 ref={videoRef}
                                 autoPlay
@@ -193,28 +189,33 @@ export default function AnswerWritingPage({ params }: { params: Promise<{ id: st
                                 className="h-full w-full object-cover"
                                 onLoadedMetadata={startCamera}
                             />
-                            {/* Scanning Guide Overlay */}
-                            <div className="absolute inset-10 border-2 border-white/20 rounded-lg pointer-events-none">
-                                <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-emerald-500 -ml-1 -mt-1" />
-                                <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-emerald-500 -mr-1 -mt-1" />
-                                <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-emerald-500 -ml-1 -mb-1" />
-                                <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-emerald-500 -mr-1 -mb-1" />
-                            </div>
+                            {/* Scanning Guide */}
+                            <div className="absolute inset-8 border border-white/40 rounded-xl shadow-[0_0_0_9999px_rgba(0,0,0,0.2)] pointer-events-none" />
                         </div>
 
-                        {/* Shutter Section */}
-                        <div className="p-10 bg-zinc-950 flex flex-col items-center gap-4">
+                        {/* Footer / Controls */}
+                        <div className="p-8 bg-white flex flex-col items-center">
+                            {/* Horizontal Page Gallery */}
+                            {capturedImages.length > 0 && (
+                                <div className="flex gap-2 mb-8 overflow-x-auto max-w-full pb-2 no-scrollbar">
+                                    {capturedImages.map((img, idx) => (
+                                        <div key={idx} className="relative w-12 h-16 shrink-0 border border-slate-200 rounded-md overflow-hidden bg-white shadow-sm">
+                                            <img src={img} className="w-full h-full object-cover" />
+                                            <div className="absolute top-0 right-0 bg-indigo-600 text-white text-[8px] px-1">{idx+1}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
                             <canvas ref={canvasRef} className="hidden" />
+                            
                             <button
                                 onClick={capturePhoto}
-                                className="group relative flex items-center justify-center"
+                                className="w-20 h-20 bg-slate-900 rounded-full border-[6px] border-slate-100 flex items-center justify-center shadow-xl active:scale-90 transition-transform"
                             >
-                                <div className="absolute inset-0 bg-white/20 rounded-full scale-125 group-active:scale-110 transition-transform" />
-                                <div className="w-20 h-20 bg-white rounded-full border-4 border-black flex items-center justify-center">
-                                    <Camera className="text-black w-8 h-8" />
-                                </div>
+                                <Camera className="text-white w-8 h-8" />
                             </button>
-                            <p className="text-zinc-500 text-xs font-medium uppercase tracking-widest">Tap to capture page</p>
+                            <p className="mt-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Align page & Capture</p>
                         </div>
                     </motion.div>
                 )}
