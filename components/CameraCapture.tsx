@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
-import { X, Download, Loader2, ZoomIn } from "lucide-react";
+import { X, Download, Loader2, Camera } from "lucide-react";
 
 interface CameraCaptureProps {
   onCapture: (images: string[]) => void;
@@ -21,6 +21,7 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
   const [isCapturing, setIsCapturing] = useState(false);
   const [cooldown, setCooldown] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [autoMode, setAutoMode] = useState(true);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -56,7 +57,7 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
     }
   };
 
-  // FIND DOCUMENT CORNERS
+  // IMPROVED DOCUMENT DETECTION - FOCUS ON WHITE PAPER
   const findDocumentCorners = useCallback((): Point[] | null => {
     if (!videoRef.current || !detectionCanvasRef.current || !cameraReady) return null;
 
@@ -74,223 +75,120 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
     if (vW === 0 || vH === 0) return null;
 
     // Downsample for performance
-    const scale = 0.25;
-    canvas.width = vW * scale;
-    canvas.height = vH * scale;
+    const scale = 0.3;
+    canvas.width = Math.floor(vW * scale);
+    canvas.height = Math.floor(vH * scale);
     
     try {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const pixels = imageData.data;
       
-      // Convert to grayscale and apply edge detection
-      const gray = new Uint8ClampedArray(canvas.width * canvas.height);
-      for (let i = 0; i < imageData.data.length; i += 4) {
-        const avg = (imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]) / 3;
-        gray[i / 4] = avg;
-      }
-
-      // Apply Gaussian blur
-      const blurred = gaussianBlur(gray, canvas.width, canvas.height);
-      
-      // Sobel edge detection
-      const edges = sobelEdgeDetection(blurred, canvas.width, canvas.height);
-      
-      // Find contours
-      const corners = findLargestQuadrilateral(edges, canvas.width, canvas.height);
-      
-      if (corners) {
-        // Scale back to original video dimensions
-        return corners.map(p => ({
-          x: p.x / scale,
-          y: p.y / scale
-        }));
+      // Find white regions (paper)
+      const whiteMap: boolean[][] = [];
+      for (let y = 0; y < canvas.height; y++) {
+        whiteMap[y] = [];
+        for (let x = 0; x < canvas.width; x++) {
+          const idx = (y * canvas.width + x) * 4;
+          const r = pixels[idx];
+          const g = pixels[idx + 1];
+          const b = pixels[idx + 2];
+          const brightness = (r + g + b) / 3;
+          
+          // Check if pixel is whitish (paper)
+          const isWhite = brightness > 160 && 
+                         Math.abs(r - g) < 30 && 
+                         Math.abs(g - b) < 30 && 
+                         Math.abs(r - b) < 30;
+          
+          whiteMap[y][x] = isWhite;
+        }
       }
       
-      return null;
+      // Find largest white rectangular region
+      let maxArea = 0;
+      let bestRect: { x: number, y: number, w: number, h: number } | null = null;
+      
+      const step = 5; // Skip pixels for speed
+      for (let y = 10; y < canvas.height - 10; y += step) {
+        for (let x = 10; x < canvas.width - 10; x += step) {
+          if (whiteMap[y][x]) {
+            // Expand rectangle from this point
+            let w = 0, h = 0;
+            
+            // Find width
+            while (x + w < canvas.width - 10 && whiteMap[y][x + w]) {
+              w++;
+            }
+            
+            // Find height
+            let validHeight = true;
+            while (y + h < canvas.height - 10 && validHeight) {
+              for (let dx = 0; dx < w; dx++) {
+                if (!whiteMap[y + h][x + dx]) {
+                  validHeight = false;
+                  break;
+                }
+              }
+              if (validHeight) h++;
+            }
+            
+            const area = w * h;
+            if (area > maxArea && w > 30 && h > 40 && h / w > 1.2 && h / w < 2.0) {
+              maxArea = area;
+              bestRect = { x, y, w, h };
+            }
+          }
+        }
+      }
+      
+      if (!bestRect) return null;
+      
+      // Check if rectangle is large enough (at least 15% of frame)
+      const minArea = (canvas.width * canvas.height) * 0.15;
+      if (maxArea < minArea) return null;
+      
+      // Convert to corners and scale back
+      const corners: Point[] = [
+        { x: bestRect.x / scale, y: bestRect.y / scale },
+        { x: (bestRect.x + bestRect.w) / scale, y: bestRect.y / scale },
+        { x: (bestRect.x + bestRect.w) / scale, y: (bestRect.y + bestRect.h) / scale },
+        { x: bestRect.x / scale, y: (bestRect.y + bestRect.h) / scale }
+      ];
+      
+      return corners;
+      
     } catch (err) {
-      console.error("Corner detection error:", err);
+      console.error("Detection error:", err);
       return null;
     }
   }, [cameraReady]);
-
-  // GAUSSIAN BLUR
-  const gaussianBlur = (data: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray => {
-    const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
-    const kernelSum = 16;
-    const output = new Uint8ClampedArray(data.length);
-    
-    for (let y = 1; y < height - 1; y++) {
-      for (let x = 1; x < width - 1; x++) {
-        let sum = 0;
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const idx = (y + ky) * width + (x + kx);
-            const kernelIdx = (ky + 1) * 3 + (kx + 1);
-            sum += data[idx] * kernel[kernelIdx];
-          }
-        }
-        output[y * width + x] = sum / kernelSum;
-      }
-    }
-    
-    return output;
-  };
-
-  // SOBEL EDGE DETECTION
-  const sobelEdgeDetection = (data: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray => {
-    const output = new Uint8ClampedArray(data.length);
-    const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
-    const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
-    
-    for (let y = 1; y < height - 1; y++) {
-      for (let x = 1; x < width - 1; x++) {
-        let gx = 0, gy = 0;
-        
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const idx = (y + ky) * width + (x + kx);
-            const kernelIdx = (ky + 1) * 3 + (kx + 1);
-            gx += data[idx] * sobelX[kernelIdx];
-            gy += data[idx] * sobelY[kernelIdx];
-          }
-        }
-        
-        const magnitude = Math.sqrt(gx * gx + gy * gy);
-        output[y * width + x] = magnitude > 50 ? 255 : 0;
-      }
-    }
-    
-    return output;
-  };
-
-  // FIND LARGEST QUADRILATERAL
-  const findLargestQuadrilateral = (edges: Uint8ClampedArray, width: number, height: number): Point[] | null => {
-    // Simple contour detection - find edge pixels
-    const edgePoints: Point[] = [];
-    
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if (edges[y * width + x] > 0) {
-          edgePoints.push({ x, y });
-        }
-      }
-    }
-    
-    if (edgePoints.length < 100) return null;
-    
-    // Find approximate corners using grid sampling
-    const gridSize = 20;
-    const density: number[][] = Array(gridSize).fill(0).map(() => Array(gridSize).fill(0));
-    
-    for (const point of edgePoints) {
-      const gx = Math.floor((point.x / width) * gridSize);
-      const gy = Math.floor((point.y / height) * gridSize);
-      if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize) {
-        density[gy][gx]++;
-      }
-    }
-    
-    // Find corners based on edge density
-    const corners: Point[] = [];
-    const margin = 2;
-    
-    // Top-left
-    let maxDensity = 0;
-    let topLeft = { x: 0, y: 0 };
-    for (let y = margin; y < gridSize / 2; y++) {
-      for (let x = margin; x < gridSize / 2; x++) {
-        if (density[y][x] > maxDensity) {
-          maxDensity = density[y][x];
-          topLeft = { x: (x / gridSize) * width, y: (y / gridSize) * height };
-        }
-      }
-    }
-    corners.push(topLeft);
-    
-    // Top-right
-    maxDensity = 0;
-    let topRight = { x: width, y: 0 };
-    for (let y = margin; y < gridSize / 2; y++) {
-      for (let x = gridSize / 2; x < gridSize - margin; x++) {
-        if (density[y][x] > maxDensity) {
-          maxDensity = density[y][x];
-          topRight = { x: (x / gridSize) * width, y: (y / gridSize) * height };
-        }
-      }
-    }
-    corners.push(topRight);
-    
-    // Bottom-right
-    maxDensity = 0;
-    let bottomRight = { x: width, y: height };
-    for (let y = gridSize / 2; y < gridSize - margin; y++) {
-      for (let x = gridSize / 2; x < gridSize - margin; x++) {
-        if (density[y][x] > maxDensity) {
-          maxDensity = density[y][x];
-          bottomRight = { x: (x / gridSize) * width, y: (y / gridSize) * height };
-        }
-      }
-    }
-    corners.push(bottomRight);
-    
-    // Bottom-left
-    maxDensity = 0;
-    let bottomLeft = { x: 0, y: height };
-    for (let y = gridSize / 2; y < gridSize - margin; y++) {
-      for (let x = margin; x < gridSize / 2; x++) {
-        if (density[y][x] > maxDensity) {
-          maxDensity = density[y][x];
-          bottomLeft = { x: (x / gridSize) * width, y: (y / gridSize) * height };
-        }
-      }
-    }
-    corners.push(bottomLeft);
-    
-    // Validate corners form a reasonable quadrilateral
-    const area = calculateQuadrilateralArea(corners);
-    const minArea = (width * height) * 0.1; // At least 10% of frame
-    
-    if (area < minArea) return null;
-    
-    return corners;
-  };
-
-  // CALCULATE QUADRILATERAL AREA
-  const calculateQuadrilateralArea = (corners: Point[]): number => {
-    if (corners.length !== 4) return 0;
-    
-    // Shoelace formula
-    let area = 0;
-    for (let i = 0; i < 4; i++) {
-      const j = (i + 1) % 4;
-      area += corners[i].x * corners[j].y;
-      area -= corners[j].x * corners[i].y;
-    }
-    
-    return Math.abs(area) / 2;
-  };
 
   // PERSPECTIVE TRANSFORM
   const perspectiveTransform = (srcCorners: Point[], canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
     if (!videoRef.current) return;
     
-    // Calculate output dimensions (A4 aspect ratio)
-    const outputWidth = 1654;
-    const outputHeight = 2339;
+    const video = videoRef.current;
+    
+    // Calculate source dimensions
+    const srcWidth = Math.max(
+      Math.abs(srcCorners[1].x - srcCorners[0].x),
+      Math.abs(srcCorners[2].x - srcCorners[3].x)
+    );
+    const srcHeight = Math.max(
+      Math.abs(srcCorners[3].y - srcCorners[0].y),
+      Math.abs(srcCorners[2].y - srcCorners[1].y)
+    );
+    
+    // Output dimensions (maintain aspect ratio)
+    const aspectRatio = srcHeight / srcWidth;
+    const outputWidth = 1240;
+    const outputHeight = Math.floor(outputWidth * aspectRatio);
     
     canvas.width = outputWidth;
     canvas.height = outputHeight;
     
-    // Destination corners (rectangular output)
-    const dstCorners = [
-      { x: 0, y: 0 },
-      { x: outputWidth, y: 0 },
-      { x: outputWidth, y: outputHeight },
-      { x: 0, y: outputHeight }
-    ];
-    
-    // Simple bilinear interpolation
-    const video = videoRef.current;
+    // Create temporary canvas with source image
     const tempCanvas = document.createElement('canvas');
     tempCanvas.width = video.videoWidth;
     tempCanvas.height = video.videoHeight;
@@ -298,71 +196,97 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
     if (!tempCtx) return;
     
     tempCtx.drawImage(video, 0, 0);
-    const srcImageData = tempCtx.getImageData(0, 0, video.videoWidth, video.videoHeight);
     
-    const destImageData = ctx.createImageData(outputWidth, outputHeight);
-    
+    // Simple perspective correction using 4-point transform
+    // Map source quad to destination rectangle
     for (let y = 0; y < outputHeight; y++) {
       for (let x = 0; x < outputWidth; x++) {
-        // Map destination pixel to source using bilinear interpolation
         const u = x / outputWidth;
         const v = y / outputHeight;
         
-        // Bilinear interpolation of corners
+        // Bilinear interpolation
         const top = {
-          x: srcCorners[0].x * (1 - u) + srcCorners[1].x * u,
-          y: srcCorners[0].y * (1 - u) + srcCorners[1].y * u
+          x: srcCorners[0].x + (srcCorners[1].x - srcCorners[0].x) * u,
+          y: srcCorners[0].y + (srcCorners[1].y - srcCorners[0].y) * u
         };
         const bottom = {
-          x: srcCorners[3].x * (1 - u) + srcCorners[2].x * u,
-          y: srcCorners[3].y * (1 - u) + srcCorners[2].y * u
+          x: srcCorners[3].x + (srcCorners[2].x - srcCorners[3].x) * u,
+          y: srcCorners[3].y + (srcCorners[2].y - srcCorners[3].y) * u
         };
         
-        const srcX = Math.floor(top.x * (1 - v) + bottom.x * v);
-        const srcY = Math.floor(top.y * (1 - v) + bottom.y * v);
+        const srcX = Math.floor(top.x + (bottom.x - top.x) * v);
+        const srcY = Math.floor(top.y + (bottom.y - top.y) * v);
         
         if (srcX >= 0 && srcX < video.videoWidth && srcY >= 0 && srcY < video.videoHeight) {
-          const srcIdx = (srcY * video.videoWidth + srcX) * 4;
-          const destIdx = (y * outputWidth + x) * 4;
-          
-          destImageData.data[destIdx] = srcImageData.data[srcIdx];
-          destImageData.data[destIdx + 1] = srcImageData.data[srcIdx + 1];
-          destImageData.data[destIdx + 2] = srcImageData.data[srcIdx + 2];
-          destImageData.data[destIdx + 3] = 255;
+          const srcPixel = tempCtx.getImageData(srcX, srcY, 1, 1);
+          ctx.putImageData(srcPixel, x, y);
         }
       }
     }
     
-    ctx.putImageData(destImageData, 0, 0);
-    
     // Apply image enhancement
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.filter = 'contrast(1.2) brightness(1.05) saturate(0)';
-    const enhanced = ctx.getImageData(0, 0, outputWidth, outputHeight);
-    ctx.filter = 'none';
-    ctx.putImageData(enhanced, 0, 0);
+    const imageData = ctx.getImageData(0, 0, outputWidth, outputHeight);
+    const data = imageData.data;
+    
+    // Convert to grayscale and enhance contrast
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      
+      // Increase contrast
+      const contrast = 1.3;
+      const enhanced = ((gray - 128) * contrast) + 128;
+      const clamped = Math.max(0, Math.min(255, enhanced));
+      
+      data[i] = data[i + 1] = data[i + 2] = clamped;
+    }
+    
+    ctx.putImageData(imageData, 0, 0);
   };
 
-  // DETECT DOCUMENT
+  // AUTO DETECT DOCUMENT
   const detectDocument = useCallback(() => {
-    if (cooldown || isCapturing) return;
+    if (!autoMode || cooldown || isCapturing) return;
     
     const corners = findDocumentCorners();
     setDocumentCorners(corners);
     
     if (corners) {
       stableFramesRef.current += 1;
-      if (stableFramesRef.current >= 10) {
-        captureImage(corners);
+      if (stableFramesRef.current >= 12) {
+        captureWithCorners(corners);
         stableFramesRef.current = 0;
       }
     } else {
       stableFramesRef.current = 0;
     }
-  }, [cameraReady, cooldown, isCapturing, findDocumentCorners]);
+  }, [autoMode, cameraReady, cooldown, isCapturing, findDocumentCorners]);
 
-  // CAPTURE IMAGE WITH PERSPECTIVE CORRECTION
-  const captureImage = useCallback((corners: Point[]) => {
+  // MANUAL CAPTURE
+  const manualCapture = () => {
+    if (isCapturing || cooldown) return;
+    
+    const corners = documentCorners;
+    if (corners) {
+      captureWithCorners(corners);
+    } else {
+      // Fallback: use center frame
+      if (!videoRef.current) return;
+      const vW = videoRef.current.videoWidth;
+      const vH = videoRef.current.videoHeight;
+      
+      const centerCorners: Point[] = [
+        { x: vW * 0.15, y: vH * 0.15 },
+        { x: vW * 0.85, y: vH * 0.15 },
+        { x: vW * 0.85, y: vH * 0.85 },
+        { x: vW * 0.15, y: vH * 0.85 }
+      ];
+      
+      captureWithCorners(centerCorners);
+    }
+  };
+
+  // CAPTURE WITH PERSPECTIVE CORRECTION
+  const captureWithCorners = useCallback((corners: Point[]) => {
     if (!videoRef.current || !canvasRef.current || isCapturing || cooldown) return;
     
     const canvas = canvasRef.current;
@@ -375,7 +299,7 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
       // Apply perspective transform
       perspectiveTransform(corners, canvas, ctx);
       
-      const imageData = canvas.toDataURL("image/jpeg", 0.95);
+      const imageData = canvas.toDataURL("image/jpeg", 0.92);
       setCapturedImages(prev => [...prev, imageData]);
       
       setFlash(true);
@@ -385,7 +309,7 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
       setTimeout(() => {
         setCooldown(false);
         setIsCapturing(false);
-      }, 2500);
+      }, 2000);
       
     } catch (err) {
       console.error("Capture error:", err);
@@ -411,11 +335,11 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
   }, []);
 
   useEffect(() => {
-    if (cameraReady) {
-      const interval = setInterval(detectDocument, 300);
+    if (cameraReady && autoMode) {
+      const interval = setInterval(detectDocument, 250);
       return () => clearInterval(interval);
     }
-  }, [detectDocument, cameraReady]);
+  }, [detectDocument, cameraReady, autoMode]);
 
   // Convert corners for display
   const getDisplayCorners = (): Point[] | null => {
@@ -446,27 +370,41 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
           <X className="w-6 h-6" />
         </button>
         
-        {capturedImages.length > 0 && (
-          <div className="flex items-center gap-2">
-            <div className="px-4 py-2 bg-white/20 backdrop-blur-md rounded-full text-white text-sm font-semibold">
-              {capturedImages.length} {capturedImages.length === 1 ? 'Page' : 'Pages'}
-            </div>
-            <button
-              onClick={handleSave}
-              disabled={isSubmitting}
-              className="px-5 py-2 bg-blue-600 rounded-full text-white text-sm font-semibold flex items-center gap-2 active:scale-95 transition-transform disabled:opacity-50"
-            >
-              {isSubmitting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  Save
-                </>
-              )}
-            </button>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Auto/Manual Toggle */}
+          <button
+            onClick={() => setAutoMode(!autoMode)}
+            className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+              autoMode 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-white/20 text-white backdrop-blur-md'
+            }`}
+          >
+            {autoMode ? '🤖 Auto' : '👆 Manual'}
+          </button>
+          
+          {capturedImages.length > 0 && (
+            <>
+              <div className="px-4 py-2 bg-white/20 backdrop-blur-md rounded-full text-white text-sm font-semibold">
+                {capturedImages.length}
+              </div>
+              <button
+                onClick={handleSave}
+                disabled={isSubmitting}
+                className="px-5 py-2 bg-blue-600 rounded-full text-white text-sm font-semibold flex items-center gap-2 active:scale-95 transition-transform disabled:opacity-50"
+              >
+                {isSubmitting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    <Download className="w-4 h-4" />
+                    Save
+                  </>
+                )}
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* CAMERA */}
@@ -527,7 +465,7 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
         )}
 
         {/* STATUS */}
-        <div className="absolute bottom-[180px] w-full flex justify-center px-4">
+        <div className="absolute bottom-[200px] w-full flex justify-center px-4">
           {isCapturing && (
             <div className="px-6 py-3 bg-black/80 backdrop-blur-lg rounded-full text-white text-sm font-medium shadow-lg">
               📸 Capturing...
@@ -535,21 +473,36 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
           )}
           {cooldown && !isCapturing && (
             <div className="px-6 py-3 bg-orange-500/90 backdrop-blur-lg rounded-full text-white text-sm font-medium shadow-lg">
-              ⏱️ Wait 2.5s
+              ⏱️ Processing...
             </div>
           )}
-          {documentCorners && !isCapturing && !cooldown && (
+          {documentCorners && !isCapturing && !cooldown && autoMode && (
             <div className="px-6 py-3 bg-blue-600/90 backdrop-blur-lg rounded-full text-white text-sm font-medium shadow-lg flex items-center gap-2 animate-pulse">
-              <ZoomIn className="w-4 h-4" />
-              Capturing... hold steady
+              <Camera className="w-4 h-4" />
+              Hold steady...
             </div>
           )}
           {!documentCorners && !isCapturing && !cooldown && cameraReady && (
             <div className="px-6 py-3 bg-black/70 backdrop-blur-lg rounded-full text-white/80 text-sm font-medium">
-              Position document in frame
+              {autoMode ? '📄 Position white paper in frame' : '📸 Tap capture button'}
             </div>
           )}
         </div>
+
+        {/* MANUAL CAPTURE BUTTON */}
+        {!autoMode && (
+          <div className="absolute bottom-[120px] w-full flex justify-center">
+            <button
+              onClick={manualCapture}
+              disabled={isCapturing || cooldown}
+              className="w-20 h-20 rounded-full bg-white border-4 border-blue-500 shadow-2xl active:scale-95 transition-transform disabled:opacity-50 flex items-center justify-center"
+            >
+              <div className="w-16 h-16 rounded-full bg-blue-500 flex items-center justify-center">
+                <Camera className="w-8 h-8 text-white" />
+              </div>
+            </button>
+          </div>
+        )}
 
         {/* FLASH */}
         {flash && <div className="absolute inset-0 bg-white animate-flash" />}
@@ -578,7 +531,7 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
           </div>
         ) : (
           <div className="text-center text-white/50 text-sm py-6">
-            📄 Position your document within the frame
+            📄 No pages captured yet
           </div>
         )}
       </div>
