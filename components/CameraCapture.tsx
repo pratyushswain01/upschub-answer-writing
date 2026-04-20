@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
-import { X, Download, Trash2, Loader2, ZoomIn } from "lucide-react";
+import { X, Download, Loader2, ZoomIn } from "lucide-react";
 
 interface CameraCaptureProps {
   onCapture: (images: string[]) => void;
@@ -9,14 +9,18 @@ interface CameraCaptureProps {
   isSubmitting?: boolean;
 }
 
+interface Point {
+  x: number;
+  y: number;
+}
+
 export default function CameraCapture({ onCapture, onClose, isSubmitting = false }: CameraCaptureProps) {
   const [capturedImages, setCapturedImages] = useState<string[]>([]);
   const [flash, setFlash] = useState(false);
-  const [documentDetected, setDocumentDetected] = useState(false);
+  const [documentCorners, setDocumentCorners] = useState<Point[] | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
   const [cooldown, setCooldown] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
-  const [detectionStrength, setDetectionStrength] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -52,133 +56,331 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
     }
   };
 
-  // ADVANCED DOCUMENT DETECTION
-  const detectDocument = useCallback(() => {
-    if (!videoRef.current || !detectionCanvasRef.current || !cameraReady || cooldown) return;
+  // FIND DOCUMENT CORNERS
+  const findDocumentCorners = useCallback((): Point[] | null => {
+    if (!videoRef.current || !detectionCanvasRef.current || !cameraReady) return null;
 
     const video = videoRef.current;
     const canvas = detectionCanvasRef.current;
     
-    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return null;
 
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return;
+    if (!ctx) return null;
 
     const vW = video.videoWidth;
     const vH = video.videoHeight;
 
-    if (vW === 0 || vH === 0) return;
+    if (vW === 0 || vH === 0) return null;
 
-    // Sample region of interest
-    const roiX = vW * 0.15;
-    const roiY = vH * 0.10;
-    const roiW = vW * 0.70;
-    const roiH = vH * 0.80;
-
-    canvas.width = 320;
-    canvas.height = 480;
+    // Downsample for performance
+    const scale = 0.25;
+    canvas.width = vW * scale;
+    canvas.height = vH * scale;
     
     try {
-      ctx.drawImage(video, roiX, roiY, roiW, roiH, 0, 0, 320, 480);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       
-      const imageData = ctx.getImageData(0, 0, 320, 480);
-      const pixels = imageData.data;
-      
-      // Multi-factor detection
-      let whitePixels = 0;
-      let darkPixels = 0;
-      let edgePixels = 0;
-      const totalPixels = pixels.length / 4;
-      
-      // Edge detection using simple gradient
-      for (let y = 1; y < 479; y++) {
-        for (let x = 1; x < 319; x++) {
-          const idx = (y * 320 + x) * 4;
-          const brightness = (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
-          
-          if (brightness > 200) whitePixels++;
-          if (brightness < 60) darkPixels++;
-          
-          // Check gradient
-          const rightIdx = (y * 320 + (x + 1)) * 4;
-          const bottomIdx = ((y + 1) * 320 + x) * 4;
-          
-          const rightBright = (pixels[rightIdx] + pixels[rightIdx + 1] + pixels[rightIdx + 2]) / 3;
-          const bottomBright = (pixels[bottomIdx] + pixels[bottomIdx + 1] + pixels[bottomIdx + 2]) / 3;
-          
-          const gradX = Math.abs(brightness - rightBright);
-          const gradY = Math.abs(brightness - bottomBright);
-          
-          if (gradX > 30 || gradY > 30) edgePixels++;
-        }
+      // Convert to grayscale and apply edge detection
+      const gray = new Uint8ClampedArray(canvas.width * canvas.height);
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        const avg = (imageData.data[i] + imageData.data[i + 1] + imageData.data[i + 2]) / 3;
+        gray[i / 4] = avg;
       }
-      
-      const whiteRatio = whitePixels / totalPixels;
-      const darkRatio = darkPixels / totalPixels;
-      const edgeRatio = edgePixels / totalPixels;
-      
-      let quality = 0;
-      
-      // Paper should have good white content
-      if (whiteRatio > 0.30 && whiteRatio < 0.80) quality += 35;
-      
-      // Some text/dark content
-      if (darkRatio > 0.05 && darkRatio < 0.40) quality += 35;
-      
-      // Document edges
-      if (edgeRatio > 0.03 && edgeRatio < 0.15) quality += 30;
-      
-      setDetectionStrength(quality);
-      const detected = quality >= 70;
-      setDocumentDetected(detected);
-      
-      if (detected && !isCapturing) {
-        stableFramesRef.current += 1;
-        if (stableFramesRef.current >= 8) {
-          captureImage();
-          stableFramesRef.current = 0;
-        }
-      } else {
-        stableFramesRef.current = Math.max(0, stableFramesRef.current - 1);
-      }
-    } catch (err) {
-      console.error("Detection error:", err);
-    }
-  }, [cameraReady, cooldown, isCapturing]);
 
-  // CAPTURE IMAGE
-  const captureImage = useCallback(() => {
+      // Apply Gaussian blur
+      const blurred = gaussianBlur(gray, canvas.width, canvas.height);
+      
+      // Sobel edge detection
+      const edges = sobelEdgeDetection(blurred, canvas.width, canvas.height);
+      
+      // Find contours
+      const corners = findLargestQuadrilateral(edges, canvas.width, canvas.height);
+      
+      if (corners) {
+        // Scale back to original video dimensions
+        return corners.map(p => ({
+          x: p.x / scale,
+          y: p.y / scale
+        }));
+      }
+      
+      return null;
+    } catch (err) {
+      console.error("Corner detection error:", err);
+      return null;
+    }
+  }, [cameraReady]);
+
+  // GAUSSIAN BLUR
+  const gaussianBlur = (data: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray => {
+    const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+    const kernelSum = 16;
+    const output = new Uint8ClampedArray(data.length);
+    
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let sum = 0;
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const idx = (y + ky) * width + (x + kx);
+            const kernelIdx = (ky + 1) * 3 + (kx + 1);
+            sum += data[idx] * kernel[kernelIdx];
+          }
+        }
+        output[y * width + x] = sum / kernelSum;
+      }
+    }
+    
+    return output;
+  };
+
+  // SOBEL EDGE DETECTION
+  const sobelEdgeDetection = (data: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray => {
+    const output = new Uint8ClampedArray(data.length);
+    const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+    const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+    
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let gx = 0, gy = 0;
+        
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const idx = (y + ky) * width + (x + kx);
+            const kernelIdx = (ky + 1) * 3 + (kx + 1);
+            gx += data[idx] * sobelX[kernelIdx];
+            gy += data[idx] * sobelY[kernelIdx];
+          }
+        }
+        
+        const magnitude = Math.sqrt(gx * gx + gy * gy);
+        output[y * width + x] = magnitude > 50 ? 255 : 0;
+      }
+    }
+    
+    return output;
+  };
+
+  // FIND LARGEST QUADRILATERAL
+  const findLargestQuadrilateral = (edges: Uint8ClampedArray, width: number, height: number): Point[] | null => {
+    // Simple contour detection - find edge pixels
+    const edgePoints: Point[] = [];
+    
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (edges[y * width + x] > 0) {
+          edgePoints.push({ x, y });
+        }
+      }
+    }
+    
+    if (edgePoints.length < 100) return null;
+    
+    // Find approximate corners using grid sampling
+    const gridSize = 20;
+    const density: number[][] = Array(gridSize).fill(0).map(() => Array(gridSize).fill(0));
+    
+    for (const point of edgePoints) {
+      const gx = Math.floor((point.x / width) * gridSize);
+      const gy = Math.floor((point.y / height) * gridSize);
+      if (gx >= 0 && gx < gridSize && gy >= 0 && gy < gridSize) {
+        density[gy][gx]++;
+      }
+    }
+    
+    // Find corners based on edge density
+    const corners: Point[] = [];
+    const margin = 2;
+    
+    // Top-left
+    let maxDensity = 0;
+    let topLeft = { x: 0, y: 0 };
+    for (let y = margin; y < gridSize / 2; y++) {
+      for (let x = margin; x < gridSize / 2; x++) {
+        if (density[y][x] > maxDensity) {
+          maxDensity = density[y][x];
+          topLeft = { x: (x / gridSize) * width, y: (y / gridSize) * height };
+        }
+      }
+    }
+    corners.push(topLeft);
+    
+    // Top-right
+    maxDensity = 0;
+    let topRight = { x: width, y: 0 };
+    for (let y = margin; y < gridSize / 2; y++) {
+      for (let x = gridSize / 2; x < gridSize - margin; x++) {
+        if (density[y][x] > maxDensity) {
+          maxDensity = density[y][x];
+          topRight = { x: (x / gridSize) * width, y: (y / gridSize) * height };
+        }
+      }
+    }
+    corners.push(topRight);
+    
+    // Bottom-right
+    maxDensity = 0;
+    let bottomRight = { x: width, y: height };
+    for (let y = gridSize / 2; y < gridSize - margin; y++) {
+      for (let x = gridSize / 2; x < gridSize - margin; x++) {
+        if (density[y][x] > maxDensity) {
+          maxDensity = density[y][x];
+          bottomRight = { x: (x / gridSize) * width, y: (y / gridSize) * height };
+        }
+      }
+    }
+    corners.push(bottomRight);
+    
+    // Bottom-left
+    maxDensity = 0;
+    let bottomLeft = { x: 0, y: height };
+    for (let y = gridSize / 2; y < gridSize - margin; y++) {
+      for (let x = margin; x < gridSize / 2; x++) {
+        if (density[y][x] > maxDensity) {
+          maxDensity = density[y][x];
+          bottomLeft = { x: (x / gridSize) * width, y: (y / gridSize) * height };
+        }
+      }
+    }
+    corners.push(bottomLeft);
+    
+    // Validate corners form a reasonable quadrilateral
+    const area = calculateQuadrilateralArea(corners);
+    const minArea = (width * height) * 0.1; // At least 10% of frame
+    
+    if (area < minArea) return null;
+    
+    return corners;
+  };
+
+  // CALCULATE QUADRILATERAL AREA
+  const calculateQuadrilateralArea = (corners: Point[]): number => {
+    if (corners.length !== 4) return 0;
+    
+    // Shoelace formula
+    let area = 0;
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      area += corners[i].x * corners[j].y;
+      area -= corners[j].x * corners[i].y;
+    }
+    
+    return Math.abs(area) / 2;
+  };
+
+  // PERSPECTIVE TRANSFORM
+  const perspectiveTransform = (srcCorners: Point[], canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
+    if (!videoRef.current) return;
+    
+    // Calculate output dimensions (A4 aspect ratio)
+    const outputWidth = 1654;
+    const outputHeight = 2339;
+    
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+    
+    // Destination corners (rectangular output)
+    const dstCorners = [
+      { x: 0, y: 0 },
+      { x: outputWidth, y: 0 },
+      { x: outputWidth, y: outputHeight },
+      { x: 0, y: outputHeight }
+    ];
+    
+    // Simple bilinear interpolation
+    const video = videoRef.current;
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = video.videoWidth;
+    tempCanvas.height = video.videoHeight;
+    const tempCtx = tempCanvas.getContext('2d');
+    if (!tempCtx) return;
+    
+    tempCtx.drawImage(video, 0, 0);
+    const srcImageData = tempCtx.getImageData(0, 0, video.videoWidth, video.videoHeight);
+    
+    const destImageData = ctx.createImageData(outputWidth, outputHeight);
+    
+    for (let y = 0; y < outputHeight; y++) {
+      for (let x = 0; x < outputWidth; x++) {
+        // Map destination pixel to source using bilinear interpolation
+        const u = x / outputWidth;
+        const v = y / outputHeight;
+        
+        // Bilinear interpolation of corners
+        const top = {
+          x: srcCorners[0].x * (1 - u) + srcCorners[1].x * u,
+          y: srcCorners[0].y * (1 - u) + srcCorners[1].y * u
+        };
+        const bottom = {
+          x: srcCorners[3].x * (1 - u) + srcCorners[2].x * u,
+          y: srcCorners[3].y * (1 - u) + srcCorners[2].y * u
+        };
+        
+        const srcX = Math.floor(top.x * (1 - v) + bottom.x * v);
+        const srcY = Math.floor(top.y * (1 - v) + bottom.y * v);
+        
+        if (srcX >= 0 && srcX < video.videoWidth && srcY >= 0 && srcY < video.videoHeight) {
+          const srcIdx = (srcY * video.videoWidth + srcX) * 4;
+          const destIdx = (y * outputWidth + x) * 4;
+          
+          destImageData.data[destIdx] = srcImageData.data[srcIdx];
+          destImageData.data[destIdx + 1] = srcImageData.data[srcIdx + 1];
+          destImageData.data[destIdx + 2] = srcImageData.data[srcIdx + 2];
+          destImageData.data[destIdx + 3] = 255;
+        }
+      }
+    }
+    
+    ctx.putImageData(destImageData, 0, 0);
+    
+    // Apply image enhancement
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.filter = 'contrast(1.2) brightness(1.05) saturate(0)';
+    const enhanced = ctx.getImageData(0, 0, outputWidth, outputHeight);
+    ctx.filter = 'none';
+    ctx.putImageData(enhanced, 0, 0);
+  };
+
+  // DETECT DOCUMENT
+  const detectDocument = useCallback(() => {
+    if (cooldown || isCapturing) return;
+    
+    const corners = findDocumentCorners();
+    setDocumentCorners(corners);
+    
+    if (corners) {
+      stableFramesRef.current += 1;
+      if (stableFramesRef.current >= 10) {
+        captureImage(corners);
+        stableFramesRef.current = 0;
+      }
+    } else {
+      stableFramesRef.current = 0;
+    }
+  }, [cameraReady, cooldown, isCapturing, findDocumentCorners]);
+
+  // CAPTURE IMAGE WITH PERSPECTIVE CORRECTION
+  const captureImage = useCallback((corners: Point[]) => {
     if (!videoRef.current || !canvasRef.current || isCapturing || cooldown) return;
     
-    const video = videoRef.current;
     const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
     
     setIsCapturing(true);
     
     try {
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
-      const vW = video.videoWidth;
-      const vH = video.videoHeight;
-
-      // High quality capture
-      canvas.width = 1654;
-      canvas.height = 2339;
+      // Apply perspective transform
+      perspectiveTransform(corners, canvas, ctx);
       
-      // Image enhancement
-      ctx.filter = "contrast(1.15) brightness(1.05) saturate(0)";
-      ctx.drawImage(video, vW * 0.12, vH * 0.08, vW * 0.76, vH * 0.84, 0, 0, 1654, 2339);
-      ctx.filter = "none";
-
       const imageData = canvas.toDataURL("image/jpeg", 0.95);
       setCapturedImages(prev => [...prev, imageData]);
       
-      // Flash effect
       setFlash(true);
       setTimeout(() => setFlash(false), 150);
       
-      // Cooldown period
       setCooldown(true);
       setTimeout(() => {
         setCooldown(false);
@@ -203,7 +405,6 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
 
   useEffect(() => {
     startCamera();
-    
     return () => {
       streamRef.current?.getTracks().forEach(track => track.stop());
     };
@@ -211,10 +412,27 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
 
   useEffect(() => {
     if (cameraReady) {
-      const interval = setInterval(detectDocument, 250);
+      const interval = setInterval(detectDocument, 300);
       return () => clearInterval(interval);
     }
   }, [detectDocument, cameraReady]);
+
+  // Convert corners for display
+  const getDisplayCorners = (): Point[] | null => {
+    if (!documentCorners || !videoRef.current) return null;
+    
+    const video = videoRef.current;
+    const rect = video.getBoundingClientRect();
+    const scaleX = rect.width / video.videoWidth;
+    const scaleY = rect.height / video.videoHeight;
+    
+    return documentCorners.map(corner => ({
+      x: corner.x * scaleX,
+      y: corner.y * scaleY
+    }));
+  };
+
+  const displayCorners = getDisplayCorners();
 
   return (
     <div className="fixed inset-0 bg-black z-[9999] flex flex-col">
@@ -251,7 +469,7 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
         )}
       </div>
 
-      {/* CAMERA VIEWPORT */}
+      {/* CAMERA */}
       <div className="flex-1 relative bg-black overflow-hidden">
         <video 
           ref={videoRef}
@@ -261,61 +479,54 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
           className="w-full h-full object-cover"
         />
         
-        {/* DOCUMENT DETECTION OVERLAY - ADOBE STYLE */}
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="relative w-[85%] max-w-md aspect-[1/1.414]">
+        {/* CORNER OVERLAY */}
+        {displayCorners && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none">
+            {/* Border lines */}
+            <line
+              x1={displayCorners[0].x} y1={displayCorners[0].y}
+              x2={displayCorners[1].x} y2={displayCorners[1].y}
+              stroke="#3b82f6" strokeWidth="3"
+              className="drop-shadow-[0_0_8px_rgba(59,130,246,0.8)]"
+            />
+            <line
+              x1={displayCorners[1].x} y1={displayCorners[1].y}
+              x2={displayCorners[2].x} y2={displayCorners[2].y}
+              stroke="#3b82f6" strokeWidth="3"
+              className="drop-shadow-[0_0_8px_rgba(59,130,246,0.8)]"
+            />
+            <line
+              x1={displayCorners[2].x} y1={displayCorners[2].y}
+              x2={displayCorners[3].x} y2={displayCorners[3].y}
+              stroke="#3b82f6" strokeWidth="3"
+              className="drop-shadow-[0_0_8px_rgba(59,130,246,0.8)]"
+            />
+            <line
+              x1={displayCorners[3].x} y1={displayCorners[3].y}
+              x2={displayCorners[0].x} y2={displayCorners[0].y}
+              stroke="#3b82f6" strokeWidth="3"
+              className="drop-shadow-[0_0_8px_rgba(59,130,246,0.8)]"
+            />
             
-            {/* HOLLOW RING CORNERS - ALWAYS VISIBLE LIKE ADOBE */}
-            <div className={`absolute -top-3 -left-3 w-12 h-12 rounded-full transition-all duration-300 ${
-              documentDetected 
-                ? 'border-4 border-blue-500 bg-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.6)]' 
-                : 'border-[3px] border-white/60 bg-transparent'
-            }`}>
-              <div className={`absolute inset-[6px] rounded-full ${
-                documentDetected ? 'bg-blue-500' : 'bg-transparent'
-              }`} />
-            </div>
-            
-            <div className={`absolute -top-3 -right-3 w-12 h-12 rounded-full transition-all duration-300 ${
-              documentDetected 
-                ? 'border-4 border-blue-500 bg-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.6)]' 
-                : 'border-[3px] border-white/60 bg-transparent'
-            }`}>
-              <div className={`absolute inset-[6px] rounded-full ${
-                documentDetected ? 'bg-blue-500' : 'bg-transparent'
-              }`} />
-            </div>
-            
-            <div className={`absolute -bottom-3 -left-3 w-12 h-12 rounded-full transition-all duration-300 ${
-              documentDetected 
-                ? 'border-4 border-blue-500 bg-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.6)]' 
-                : 'border-[3px] border-white/60 bg-transparent'
-            }`}>
-              <div className={`absolute inset-[6px] rounded-full ${
-                documentDetected ? 'bg-blue-500' : 'bg-transparent'
-              }`} />
-            </div>
-            
-            <div className={`absolute -bottom-3 -right-3 w-12 h-12 rounded-full transition-all duration-300 ${
-              documentDetected 
-                ? 'border-4 border-blue-500 bg-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.6)]' 
-                : 'border-[3px] border-white/60 bg-transparent'
-            }`}>
-              <div className={`absolute inset-[6px] rounded-full ${
-                documentDetected ? 'bg-blue-500' : 'bg-transparent'
-              }`} />
-            </div>
+            {/* Corner circles */}
+            {displayCorners.map((corner, i) => (
+              <g key={i}>
+                <circle
+                  cx={corner.x} cy={corner.y} r="18"
+                  fill="rgba(59, 130, 246, 0.3)"
+                  stroke="#3b82f6" strokeWidth="3"
+                  className="drop-shadow-[0_0_12px_rgba(59,130,246,0.9)]"
+                />
+                <circle
+                  cx={corner.x} cy={corner.y} r="8"
+                  fill="#3b82f6"
+                />
+              </g>
+            ))}
+          </svg>
+        )}
 
-            {/* DETECTION BORDER GLOW */}
-            <div className={`absolute inset-0 border-2 rounded-sm transition-all duration-300 ${
-              documentDetected 
-                ? 'border-blue-500 shadow-[0_0_25px_rgba(59,130,246,0.5)]' 
-                : 'border-white/30'
-            }`} />
-          </div>
-        </div>
-
-        {/* STATUS MESSAGE - ADOBE STYLE */}
+        {/* STATUS */}
         <div className="absolute bottom-[180px] w-full flex justify-center px-4">
           {isCapturing && (
             <div className="px-6 py-3 bg-black/80 backdrop-blur-lg rounded-full text-white text-sm font-medium shadow-lg">
@@ -324,29 +535,27 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
           )}
           {cooldown && !isCapturing && (
             <div className="px-6 py-3 bg-orange-500/90 backdrop-blur-lg rounded-full text-white text-sm font-medium shadow-lg">
-              ⏱️ Wait 2.5s before next capture
+              ⏱️ Wait 2.5s
             </div>
           )}
-          {documentDetected && !isCapturing && !cooldown && (
+          {documentCorners && !isCapturing && !cooldown && (
             <div className="px-6 py-3 bg-blue-600/90 backdrop-blur-lg rounded-full text-white text-sm font-medium shadow-lg flex items-center gap-2 animate-pulse">
               <ZoomIn className="w-4 h-4" />
               Capturing... hold steady
             </div>
           )}
-          {!documentDetected && !isCapturing && !cooldown && cameraReady && (
+          {!documentCorners && !isCapturing && !cooldown && cameraReady && (
             <div className="px-6 py-3 bg-black/70 backdrop-blur-lg rounded-full text-white/80 text-sm font-medium">
               Position document in frame
             </div>
           )}
         </div>
 
-        {/* FLASH EFFECT */}
-        {flash && (
-          <div className="absolute inset-0 bg-white animate-flash" />
-        )}
+        {/* FLASH */}
+        {flash && <div className="absolute inset-0 bg-white animate-flash" />}
       </div>
 
-      {/* BOTTOM GALLERY */}
+      {/* GALLERY */}
       <div className="bg-black/95 backdrop-blur-xl px-4 py-4 border-t border-white/10">
         {capturedImages.length > 0 ? (
           <div className="flex gap-3 overflow-x-auto pb-2">
@@ -374,7 +583,6 @@ export default function CameraCapture({ onCapture, onClose, isSubmitting = false
         )}
       </div>
 
-      {/* HIDDEN CANVASES */}
       <canvas ref={canvasRef} className="hidden" />
       <canvas ref={detectionCanvasRef} className="hidden" />
     </div>
